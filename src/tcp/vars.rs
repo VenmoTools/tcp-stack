@@ -1,3 +1,5 @@
+use core::fmt;
+
 /// Send Sequence Variables of TCB block
 /// See RFC 793 Section3 for more information
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
@@ -72,6 +74,8 @@ impl ReceiveSequenceSpace {
     }
 }
 
+/// State of a tcp
+/// See RFC 793 for more information
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TcpState {
     Closed,
@@ -79,4 +83,55 @@ pub enum TcpState {
     SynReceived,
     SynSent,
     Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    Closing,
+    LastAck,
+    TimeWait,
+}
+
+impl fmt::Display for TcpState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &TcpState::Closed => write!(f, "CLOSED"),
+            &TcpState::Listen => write!(f, "LISTEN"),
+            &TcpState::SynSent => write!(f, "SYN-SENT"),
+            &TcpState::SynReceived => write!(f, "SYN-RECEIVED"),
+            &TcpState::Established => write!(f, "ESTABLISHED"),
+            &TcpState::FinWait1 => write!(f, "FIN-WAIT-1"),
+            &TcpState::FinWait2 => write!(f, "FIN-WAIT-2"),
+            &TcpState::CloseWait => write!(f, "CLOSE-WAIT"),
+            &TcpState::Closing => write!(f, "CLOSING"),
+            &TcpState::LastAck => write!(f, "LAST-ACK"),
+            &TcpState::TimeWait => write!(f, "TIME-WAIT")
+        }
+    }
+}
+
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum TcpControl {
+    /// Urgent Pointer field significant
+    URG,
+    /// Acknowledgment field significant
+    ACK,
+    /// Push Function
+    PSH,
+    /// Reset the connection
+    RST,
+    /// Synchronize sequence numbers
+    SYN,
+    /// No more data from sender
+    FIN,
+}
+
+impl TcpControl {
+    /// Return length of tcp control flag
+    pub fn len(&self) -> usize {
+        match self {
+            TcpControl::SYN | TcpControl::FIN => 1,
+            _ => 0
+        }
+    }
 }

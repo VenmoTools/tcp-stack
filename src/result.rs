@@ -6,6 +6,7 @@ pub enum Error {
     StdIOError(std::io::Error),
     WriteError(etherparse::WriteError),
     ReadError(etherparse::ReadError),
+    ValueError(etherparse::ValueError),
 }
 
 macro_rules! impl_error {
@@ -21,3 +22,4 @@ macro_rules! impl_error {
 impl_error!(std::io::Error,StdIOError);
 impl_error!(etherparse::WriteError,WriteError);
 impl_error!(etherparse::ReadError,ReadError);
+impl_error!(etherparse::ValueError,ValueError);

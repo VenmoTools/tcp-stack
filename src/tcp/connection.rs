@@ -1,8 +1,11 @@
 use std::time;
+use std::time::Duration;
 
 use crossbeam_queue::ArrayQueue;
+use etherparse::{Ipv4Header, TcpHeader};
 
 use crate::data_link::DataLayer;
+use crate::net_types::Protocol::TCP;
 use crate::result;
 
 use super::vars::{ReceiveSequenceSpace, SendSequenceSpace, TcpState};
@@ -37,6 +40,10 @@ impl Default for ConnectionConfig {
 pub struct TcpConnection {
     /// Tcp connection state
     state: TcpState,
+    /// Wait `timeout` seconds, if no inbound packets are received, the connection is aborted.
+    timeout: Option<Duration>,
+    /// Wait `keep_alive` seconds, the keep alive packets will be sent
+    keep_alive: Option<Duration>,
     /// Send Sequence Variables
     send_seq: SendSequenceSpace,
     /// Receive Sequence Variables
@@ -46,79 +53,156 @@ pub struct TcpConnection {
 }
 
 
+pub struct PacketHeader {
+    ip_header: etherparse::Ipv4Header,
+    tcp_header: etherparse::TcpHeader,
+}
+
+impl PacketHeader {
+    pub fn snd_ayn_ack(&mut self) {
+        self.tcp_header.syn = true;
+        self.tcp_header.ack = true;
+    }
+
+    pub fn snd_syn(&mut self) {
+        self.tcp_header.syn = true;
+    }
+
+    pub fn snd_fin(&mut self) {
+        self.tcp_header.fin = true;
+    }
+
+    pub fn check_sum(&mut self, payload: &[u8]) -> result::Result<u16> {
+        let checksum = self.tcp_header.calc_checksum_ipv4(
+            &self.ip_header,
+            payload,
+        )?;
+        Ok(checksum)
+    }
+}
+
+
+// TCP State diagram
+//                               +---------+ ---------\      active OPEN
+//                               |  CLOSED |            \    -----------
+//                               +---------+<---------\   \   create TCB
+//                                 |     ^              \   \  snd SYN
+//                    passive OPEN |     |   CLOSE        \   \
+//                    ------------ |     | ----------       \   \
+//                     create TCB  |     | delete TCB         \   \
+//                                 V     |                      \   \
+//                               +---------+            CLOSE    |    \
+//                               |  LISTEN |          ---------- |     |
+//                               +---------+          delete TCB |     |
+//                    rcv SYN      |     |     SEND              |     |
+//                   -----------   |     |    -------            |     V
+//  +---------+      snd SYN,ACK  /       \   snd SYN          +---------+
+//  |         |<-----------------           ------------------>|         |
+//  |   SYN   |                    rcv SYN                     |   SYN   |
+//  |   RCVD  |<-----------------------------------------------|   SENT  |
+//  |         |                    snd ACK                     |         |
+//  |         |------------------           -------------------|         |
+//  +---------+   rcv ACK of SYN  \       /  rcv SYN,ACK       +---------+
+//    |           --------------   |     |   -----------
+//    |                  x         |     |     snd ACK
+//    |                            V     V
+//    |  CLOSE                   +---------+
+//    | -------                  |  ESTAB  |
+//    | snd FIN                  +---------+
+//    |                   CLOSE    |     |    rcv FIN
+//    V                  -------   |     |    -------
+//  +---------+          snd FIN  /       \   snd ACK          +---------+
+//  |  FIN    |<-----------------           ------------------>|  CLOSE  |
+//  | WAIT-1  |------------------                              |   WAIT  |
+//  +---------+          rcv FIN  \                            +---------+
+//    | rcv ACK of FIN   -------   |                            CLOSE  |
+//    | --------------   snd ACK   |                           ------- |
+//    V        x                   V                           snd FIN V
+//  +---------+                  +---------+                   +---------+
+//  |FINWAIT-2|                  | CLOSING |                   | LAST-ACK|
+//  +---------+                  +---------+                   +---------+
+//    |                rcv ACK of FIN |                 rcv ACK of FIN |
+//    |  rcv FIN       -------------- |    Timeout=2MSL -------------- |
+//    |  -------              x       V    ------------        x       V
+//     \ snd ACK                 +---------+delete TCB         +---------+
+//      ------------------------>|TIME WAIT|------------------>| CLOSED  |
+//                               +---------+                   +---------+
 impl TcpConnection {
+    pub fn create() -> Self {
+        Self {
+            state: TcpState::Closed,
+            timeout: None,
+            keep_alive: None,
+            send_seq: SendSequenceSpace::default(),
+            recv_seq: ReceiveSequenceSpace::default(),
+            incoming: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+            wait_ack: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+        }
+    }
+
+    pub fn from_recv_sequence(seq_number: u32, wnd: u16) -> Self {
+        Self {
+            state: TcpState::Closed,
+            timeout: None,
+            keep_alive: None,
+            send_seq: SendSequenceSpace::default(),
+            recv_seq: ReceiveSequenceSpace::from_seq_number(seq_number, wnd),
+            incoming: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+            wait_ack: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+        }
+    }
+
+    fn set_state(&mut self, state: TcpState) {
+        self.state = state
+    }
+
+    pub fn close(&mut self) {
+        self.state = TcpState::Closed
+    }
+
+    /// handle the first handshake
     pub fn accept<'a, L: DataLayer>(
         iface: &mut L,
         ip: &'a etherparse::Ipv4HeaderSlice<'a>,
         tcp: &'a etherparse::TcpHeaderSlice<'a>,
         data: &'a [u8],
-    ) -> result::Result<usize> {
-        use TcpState::*;
-        let mut resp_data = [0_u8; 1500];
-
-        let mut conn = TcpConnection {
-            state: TcpState::SynReceived,
-            send_seq: Default::default(),
-            recv_seq: Default::default(),
-            incoming: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
-            wait_ack: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+    ) -> result::Result<Option<Self>> {
+        // the first packet SYN flag must be set
+        if !tcp.syn() {
+            return Ok(None);
+        }
+        // we create the new connection cause it's first handshake
+        let mut conn = TcpConnection::from_recv_sequence(
+            tcp.sequence_number(),
+            tcp.window_size(),
+        );
+        conn.set_state(TcpState::SynReceived);
+        let mut resp_packet = PacketHeader {
+            ip_header: Ipv4Header::new(
+                0,
+                DEFAULT_TIME_TO_LIVE,
+                etherparse::IpTrafficClass::IPv4,
+                ip.destination_addr().octets(),
+                ip.source_addr().octets(),
+            ),
+            tcp_header: TcpHeader::new(
+                tcp.destination_port(),
+                tcp.source_port(),
+                DEFAULT_ISS,
+                DEFAULT_WINDOWS_SIZE,
+            ),
         };
+        handshake(&mut conn, &mut resp_packet);
 
-        handle_listen_state(&mut conn, iface, &mut resp_data, ip, tcp)?;
-
-        Ok(0)
+        Ok(Some(conn))
     }
 }
 
-
-fn handle_listen_state<'a, L: DataLayer>(
-    conn: &mut TcpConnection,
-    iface: &mut L,
-    resp_data: &mut [u8],
-    ip: &'a etherparse::Ipv4HeaderSlice<'a>,
-    tcp: &'a etherparse::TcpHeaderSlice<'a>, )
-    -> result::Result<usize>
-{
-    // only accepted SYN packet
-    if !tcp.syn() {
-        return Ok(0);
-    }
-    // this connection need save sequence number, excepted next sequence and window size
-    conn.recv_seq.save_seq_number(tcp.sequence_number(), tcp.window_size());
-
-    // initial send sequence number for SYN
-    conn.send_seq.init_seq_number(DEFAULT_ISS);
-
-
-    // send response
-    let mut resp_header = etherparse::TcpHeader::new(
-        tcp.destination_port(),
-        tcp.source_port(),
-        conn.send_seq.iss,
-        conn.send_seq.wnd,
-    );
-    // we excepted the next number
-    resp_header.acknowledgment_number = conn.recv_seq.nxt;
-
-
-    // recv SYN snd SYN,ACK
-    resp_header.syn = true;
-    resp_header.ack = true;
-    let resp_ip = etherparse::Ipv4Header::new(
-        resp_header.header_len(),
-        DEFAULT_TIME_TO_LIVE,
-        etherparse::IpTrafficClass::IPv4,
-        ip.destination_addr().octets(),
-        ip.source_addr().octets(),
-    );
-
-    let end_index = {
-        let mut buf = &mut resp_data[..];
-        resp_ip.write(&mut buf)?;
-        resp_header.write(&mut buf)?;
-        buf.len()
-    };
-
-    Ok(iface.send(&resp_data[..end_index])?)
+fn handshake(conn: &mut TcpConnection, resp_packet: &mut PacketHeader) {
+    // we have to set SYN and ACK flags
+    resp_packet.snd_ayn_ack();
+    //
+    resp_packet.tcp_header.sequence_number = conn.send_seq.nxt;
+    //  already init ack number in `TcpConnection::from_recv_sequence`
+    resp_packet.tcp_header.acknowledgment_number = conn.recv_seq.nxt;
 }
-
