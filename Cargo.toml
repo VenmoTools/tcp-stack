@@ -9,3 +9,9 @@ edition = "2018"
 [dependencies]
 tun-tap="0.1.2"
 etherparse = "0.9.0"
+
+
+[dependencies.crossbeam-queue]
+version="0.2.1"
+#default-features = false
+#features=["alloc"]
