@@ -53,15 +53,19 @@ pub struct TcpConnection {
 }
 
 
-pub struct PacketHeader {
+pub struct TcpIpHeader {
     ip_header: etherparse::Ipv4Header,
     tcp_header: etherparse::TcpHeader,
 }
 
-impl PacketHeader {
+impl TcpIpHeader {
     pub fn snd_ayn_ack(&mut self) {
         self.tcp_header.syn = true;
         self.tcp_header.ack = true;
+    }
+    /// already add tcp header len
+    pub fn set_payload_len(&mut self, len: usize) {
+        self.ip_header.set_payload_len(self.tcp_header.header_len() as usize + len);
     }
 
     pub fn snd_syn(&mut self) {
@@ -177,7 +181,7 @@ impl TcpConnection {
             tcp.window_size(),
         );
         conn.set_state(TcpState::SynReceived);
-        let mut resp_packet = PacketHeader {
+        let mut handshake_packet = TcpIpHeader {
             ip_header: Ipv4Header::new(
                 0,
                 DEFAULT_TIME_TO_LIVE,
@@ -192,17 +196,23 @@ impl TcpConnection {
                 DEFAULT_WINDOWS_SIZE,
             ),
         };
-        handshake(&mut conn, &mut resp_packet);
+        handshake(&mut conn, &mut handshake_packet);
 
         Ok(Some(conn))
     }
 }
 
-fn handshake(conn: &mut TcpConnection, resp_packet: &mut PacketHeader) {
+fn handshake(conn: &mut TcpConnection, handshake_packet: &mut TcpIpHeader) -> result::Result<()> {
     // we have to set SYN and ACK flags
-    resp_packet.snd_ayn_ack();
+    handshake_packet.snd_ayn_ack();
     //
-    resp_packet.tcp_header.sequence_number = conn.send_seq.nxt;
+    handshake_packet.tcp_header.sequence_number = conn.send_seq.nxt;
     //  already init ack number in `TcpConnection::from_recv_sequence`
-    resp_packet.tcp_header.acknowledgment_number = conn.recv_seq.nxt;
+    handshake_packet.tcp_header.acknowledgment_number = conn.recv_seq.nxt;
+
+    // kernel will do this?
+    let checksum = handshake_packet.check_sum(&[])?;
+
+
+    Ok(())
 }
