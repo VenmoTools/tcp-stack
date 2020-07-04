@@ -1,3 +1,4 @@
+use std::net::{IpAddr, Ipv4Addr};
 use std::time;
 use std::time::Duration;
 
@@ -5,8 +6,12 @@ use crossbeam_queue::ArrayQueue;
 use etherparse::{Ipv4Header, TcpHeader};
 
 use crate::data_link::DataLayer;
+use crate::meta::ETHERNET_MTU;
+use crate::net_types::EtherType;
 use crate::net_types::Protocol::TCP;
+use crate::reader_writer::RawWriter;
 use crate::result;
+use crate::tcp::packet::TcpIpHeader;
 
 use super::vars::{ReceiveSequenceSpace, SendSequenceSpace, TcpState};
 
@@ -50,39 +55,6 @@ pub struct TcpConnection {
     recv_seq: ReceiveSequenceSpace,
     pub(crate) incoming: ArrayQueue<u8>,
     pub(crate) wait_ack: ArrayQueue<u8>,
-}
-
-
-pub struct TcpIpHeader {
-    ip_header: etherparse::Ipv4Header,
-    tcp_header: etherparse::TcpHeader,
-}
-
-impl TcpIpHeader {
-    pub fn snd_ayn_ack(&mut self) {
-        self.tcp_header.syn = true;
-        self.tcp_header.ack = true;
-    }
-    /// already add tcp header len
-    pub fn set_payload_len(&mut self, len: usize) {
-        self.ip_header.set_payload_len(self.tcp_header.header_len() as usize + len);
-    }
-
-    pub fn snd_syn(&mut self) {
-        self.tcp_header.syn = true;
-    }
-
-    pub fn snd_fin(&mut self) {
-        self.tcp_header.fin = true;
-    }
-
-    pub fn check_sum(&mut self, payload: &[u8]) -> result::Result<u16> {
-        let checksum = self.tcp_header.calc_checksum_ipv4(
-            &self.ip_header,
-            payload,
-        )?;
-        Ok(checksum)
-    }
 }
 
 
@@ -132,7 +104,7 @@ impl TcpIpHeader {
 //      ------------------------>|TIME WAIT|------------------>| CLOSED  |
 //                               +---------+                   +---------+
 impl TcpConnection {
-    pub fn create() -> Self {
+    fn create() -> Self {
         Self {
             state: TcpState::Closed,
             timeout: None,
@@ -144,7 +116,48 @@ impl TcpConnection {
         }
     }
 
-    pub fn from_recv_sequence(seq_number: u32, wnd: u16) -> Self {
+    pub fn connect<L: DataLayer>(iface: &mut L, ip: IpAddr, port: u16) -> result::Result<TcpConnection> {
+        // how to get local addr and free port?
+        let src_addr = Ipv4Addr::new(192, 168, 1, 1);
+        let source_port = 54466_u16;
+        let mut conn = TcpConnection::create();
+
+        let tcp_header = TcpHeader::new(
+            source_port,
+            port,
+            DEFAULT_ISS,
+            DEFAULT_WINDOWS_SIZE,
+        );
+
+        let ip_header = match ip {
+            IpAddr::V4(addr) => {
+                Ipv4Header::new(
+                    tcp_header.header_len(),
+                    DEFAULT_TIME_TO_LIVE,
+                    etherparse::IpTrafficClass::IPv4,
+                    src_addr.octets(),
+                    addr.octets(),
+                )
+            }
+            IpAddr::V6(_) => {
+                // not support right now
+                unimplemented!()
+            }
+        };
+
+        let mut packet = TcpIpHeader::from_tcpip_header(ip_header, tcp_header);
+        packet.snd_syn();
+
+        let data = [0_u8; ETHERNET_MTU];
+        let mut raw = RawWriter::from_tuntap_packet(&data, &packet);
+        raw.write_tuntap_header(EtherType::IPv4.into(), 4);
+        raw.write_header()?;
+        iface.send(&data);
+        conn.set_state(TcpState::SynSent);
+        Ok(conn)
+    }
+
+    fn from_recv_sequence(seq_number: u32, wnd: u16) -> Self {
         Self {
             state: TcpState::Closed,
             timeout: None,
@@ -180,39 +193,49 @@ impl TcpConnection {
             tcp.sequence_number(),
             tcp.window_size(),
         );
-        conn.set_state(TcpState::SynReceived);
-        let mut handshake_packet = TcpIpHeader {
-            ip_header: Ipv4Header::new(
+        // we just crate connection now state is listen
+        // when we send response packet then state will change to SynRecv
+        conn.set_state(TcpState::Listen);
+        let mut handshake_packet = TcpIpHeader::from_tcpip_header(
+            Ipv4Header::new(
                 0,
                 DEFAULT_TIME_TO_LIVE,
                 etherparse::IpTrafficClass::IPv4,
                 ip.destination_addr().octets(),
                 ip.source_addr().octets(),
             ),
-            tcp_header: TcpHeader::new(
+            TcpHeader::new(
                 tcp.destination_port(),
                 tcp.source_port(),
                 DEFAULT_ISS,
                 DEFAULT_WINDOWS_SIZE,
             ),
-        };
-        handshake(&mut conn, &mut handshake_packet);
-
+        );
+        let mut response = [0_u8; ETHERNET_MTU];
+        handshake(&mut conn, &mut handshake_packet, &mut response);
+        iface.send(&response);
+        conn.set_state(TcpState::SynReceived);
         Ok(Some(conn))
     }
 }
 
-fn handshake(conn: &mut TcpConnection, handshake_packet: &mut TcpIpHeader) -> result::Result<()> {
+////         send SYN c_seq=x
+/// Client ------------------------------------> Server
+///          send SYN,ACK,s_seq=y,ack=x+1
+/// Client <----------------------------------- Server
+///          send ACK,ack=y+1,c_seq=x+1
+/// Client -----------------------------------> Server
+fn handshake(conn: &mut TcpConnection, handshake_packet: &mut TcpIpHeader, resp_buf: &[u8]) -> result::Result<()> {
     // we have to set SYN and ACK flags
     handshake_packet.snd_ayn_ack();
-    //
     handshake_packet.tcp_header.sequence_number = conn.send_seq.nxt;
     //  already init ack number in `TcpConnection::from_recv_sequence`
     handshake_packet.tcp_header.acknowledgment_number = conn.recv_seq.nxt;
-
     // kernel will do this?
     let checksum = handshake_packet.check_sum(&[])?;
-
-
+    handshake_packet.tcp_header.checksum = checksum;
+    // data offset if have data, So the offset in relative to packet or relative to tcp data?
+    let mut writer = RawWriter::from_tuntap_packet(resp_buf, handshake_packet);
+    writer.write_header()?;
     Ok(())
 }

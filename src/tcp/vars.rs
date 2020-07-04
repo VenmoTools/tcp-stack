@@ -34,6 +34,10 @@ impl SendSequenceSpace {
         }
     }
 
+    pub fn acceptable(&self, ack_number: u32) -> bool {
+        self.una < ack_number && ack_number <= self.nxt
+    }
+
     pub fn init_seq_number(&mut self, iss: u32) {
         self.iss = iss;
         self.una = self.iss;
@@ -66,11 +70,15 @@ impl ReceiveSequenceSpace {
             irs: seq_number,
         }
     }
+    /// check if the beginning of segment falls in the window
+    pub fn beginning_fall_in_wnd(&self, seq_number: u32) -> bool {
+        self.nxt <= seq_number && seq_number < self.nxt + self.wnd
+    }
 
-    pub fn save_seq_number(&mut self, seq_number: u32, wnd: u16) {
-        self.irs = seq_number;
-        self.nxt = self.irs + 1;
-        self.wnd = wnd;
+    /// check if the end of the segment falls in the window
+    pub fn end_of_fall_in_wnd(&self, seq_number: u32, seq_len: u32) -> bool {
+        let seq = seq_number + seq_len - 1;
+        self.nxt <= seq && seq < self.nxt + self.wnd
     }
 }
 
@@ -134,4 +142,8 @@ impl TcpControl {
             _ => 0
         }
     }
+}
+
+pub fn ensure_in_safe_range(data: u32) -> u32 {
+    data % u32::max_value()
 }

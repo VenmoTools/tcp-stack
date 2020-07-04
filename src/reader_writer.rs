@@ -1,8 +1,12 @@
 use std::net::Ipv4Addr;
 
 use etherparse::{Ipv4HeaderSlice, Ipv6HeaderSlice, TcpHeaderSlice};
+use etherparse::WriteError;
 
+use crate::meta::TUN_SIZE;
 use crate::result;
+use crate::result::Error;
+use crate::tcp::packet::TcpIpHeader;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct Quad {
@@ -108,4 +112,58 @@ impl<'a> RawReader<'a> {
         }
         self.data_offset.unwrap()
     }
+}
+
+
+pub struct RawWriter<'a> {
+    offset: usize,
+    buf: &'a [u8],
+    packet: &'a TcpIpHeader,
+}
+
+impl<'a> RawWriter<'a> {
+    pub fn from_tuntap_packet(buf: &'a [u8], packet: &'a TcpIpHeader) -> Self {
+        Self {
+            offset: TUN_SIZE,
+            buf,
+            packet,
+        }
+    }
+
+    pub fn new(offset: usize, buf: &'a [u8], packet: &'a TcpIpHeader) -> Self {
+        Self {
+            offset,
+            buf,
+            packet,
+        }
+    }
+
+    fn minimum_size(&self) -> usize {
+        self.offset + self.packet.ip_header.header_len() + self.packet.tcp_header.header_len() - 1
+    }
+
+    fn assert_range(&self) -> bool {
+        self.buf.len() < self.minimum_size()
+    }
+
+    pub fn write_tuntap_header(&mut self, version: u16, flags: u16) {
+        let ver_buf: [u8; 2] = version.to_le_bytes();
+        let flag_buf: [u8; 2] = flags.to_le_bytes();
+        *self.buf[0] = flag_buf[0];
+        *self.buf[1] = flag_buf[1];
+        *self.buf[2] = ver_buf[0];
+        *self.buf[3] = ver_buf[1];
+    }
+
+    pub fn write_header(&mut self) -> result::Result<()> {
+        if !self.assert_range() {
+            return Err(Error::WriteError(WriteError::SliceTooSmall(self.minimum_size())));
+        }
+        let mut buf = self.buf[self.offset..];
+        self.packet.ip_header.write(&mut buf)?;
+        self.packet.tcp_header.write(&mut [self.packet.ip_header.header_len()..])?;
+        Ok(())
+    }
+
+    pub fn write_payload(&mut self) -> result::Result<()> {}
 }
