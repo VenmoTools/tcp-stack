@@ -149,11 +149,9 @@ impl TcpConnection {
         let mut packet = TcpIpHeader::from_tcpip_header(ip_header, tcp_header);
         packet.snd_syn();
 
-        let data = [0_u8; ETHERNET_MTU];
-        // let mut raw = RawWriter::from_tuntap_packet(&data, &packet);
-        // raw.write_tuntap_header(EtherType::IPv4.into(), 4);
-        // raw.write_header()?;
-        iface.send(&data);
+        let mut raw = RawWriter::new(0);
+        raw.write_header(&packet)?;
+        iface.send(raw.buffer());
         conn.set_state(TcpState::SynSent);
         Ok(conn)
     }
@@ -185,36 +183,39 @@ impl TcpConnection {
         tcp: &'a etherparse::TcpHeaderSlice<'a>,
         data: &'a [u8],
     ) -> result::Result<Option<Self>> {
+        debug!("[{:?}:{}] -> [{:?}:{}] SYN: {}, SEQ:{} ,ACK_NUM: {} ACK:{}",
+               ip.source_addr(), tcp.source_port(),
+               ip.destination_addr(), tcp.destination_port(),
+               tcp.syn(),
+               tcp.sequence_number(),
+               tcp.acknowledgment_number()
+        );
         // the first packet SYN flag must be set
         if !tcp.syn() {
             return Ok(None);
         }
         // we create the new connection cause it's first handshake
+        // and change send sequence number(nxt)
         let mut conn = TcpConnection::from_recv_sequence(
             tcp.sequence_number(),
             tcp.window_size(),
         );
-        // we just crate connection now state is listen
+        // we just crate connection, now state is listen
         // when we send response packet then state will change to SynRecv
         conn.set_state(TcpState::Listen);
-        let mut handshake_packet = TcpIpHeader::from_tcpip_header(
-            Ipv4Header::new(
-                0,
-                DEFAULT_TIME_TO_LIVE,
-                etherparse::IpTrafficClass::IPv4,
-                ip.destination_addr().octets(),
-                ip.source_addr().octets(),
-            ),
-            TcpHeader::new(
-                tcp.destination_port(),
-                tcp.source_port(),
-                DEFAULT_ISS,
-                DEFAULT_WINDOWS_SIZE,
-            ),
-        );
+
+        let mut handshake_packet = TcpIpHeader::with_rcv_tcpip_header(tcp, ip);
         let mut writer = RawWriter::with_default_offset();
 
         handshake(&mut conn, &mut handshake_packet, &mut writer);
+        debug!("[{:?}:{}] <- [{:?}:{}] SYN:{} SEQ:{} ACK_NUM:{},ACK:{}",
+               ip.destination_addr(), tcp.destination_port(),
+               ip.source_addr(), tcp.source_port(),
+               handshake_packet.tcp_header.syn,
+               handshake_packet.tcp_header.sequence_number,
+               handshake_packet.tcp_header.acknowledgment_number,
+               handshake_packet.tcp_header.ack
+        );
         iface.send(&writer.buffer());
         conn.set_state(TcpState::SynReceived);
         Ok(Some(conn))
@@ -229,14 +230,11 @@ impl TcpConnection {
 /// Client -----------------------------------> Server
 fn handshake(conn: &mut TcpConnection, handshake_packet: &mut TcpIpHeader, writer: &mut RawWriter) -> result::Result<()> {
     // we have to set SYN and ACK flags
-    handshake_packet.snd_ayn_ack();
-    handshake_packet.tcp_header.sequence_number = conn.send_seq.nxt;
-    //  already init ack number in `TcpConnection::from_recv_sequence`
-    handshake_packet.tcp_header.acknowledgment_number = conn.recv_seq.nxt;
-    // kernel will do this?
-    let checksum = handshake_packet.check_sum(&[])?;
-    handshake_packet.tcp_header.checksum = checksum;
-    // data offset if have data, So the offset in relative to packet or relative to tcp data?
+    handshake_packet.handshake_resp();
+    handshake_packet.update_seq_number(&conn.send_seq, &conn.recv_seq);
+    // etherparse will calc checksum so we do need this step
+    // let checksum = handshake_packet.check_sum(&[])?;
+    // handshake_packet.tcp_header.checksum = checksum;
     writer.write_header(handshake_packet)?;
     Ok(())
 }

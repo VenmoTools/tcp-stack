@@ -147,3 +147,20 @@ impl TcpControl {
 pub fn ensure_in_safe_range(data: u32) -> u32 {
     data % u32::max_value()
 }
+
+
+#[derive(Debug)]
+pub struct TcpOption {
+    /// maximum_segment_size
+    mss: Option<MaximumSegmentSize>,
+    /// SACK Permitted
+    sack: Option<SackPermitted>,
+    /// Timestamp
+    timestamp: Option<TimeStamp>,
+}
+
+pub struct MaximumSegmentSize(usize);
+
+pub struct SackPermitted(usize);
+
+pub struct TimeStamp(TimeStamp);

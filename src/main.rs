@@ -1,14 +1,17 @@
 extern crate tcp_stack;
 
 use std::collections::HashMap;
+use std::env;
+
+use tun_tap::{self, Iface};
 
 use tcp_stack::meta::{ETHERNET_MTU, TUN_SIZE};
 use tcp_stack::reader_writer::{Quad, RawReader};
 use tcp_stack::result;
 use tcp_stack::tcp::connection::TcpConnection;
-use tun_tap::{self, Iface};
 
 fn main() -> result::Result<()> {
+    env::var("RUST_LOG=debug");
     let mut status: HashMap<Quad, TcpConnection> = HashMap::new();
     // do we need IFF_NO_PI?
     let mut iface = Iface::new("tcp0", tun_tap::Mode::Tun)?;
