@@ -37,6 +37,27 @@ impl From<u16> for EtherType {
 	}
 }
 
+impl Into<u16> for EtherType {
+	fn into(self) -> u16 {
+		use EtherType::*;
+		match self {
+			IPv4 => 0x0800,
+			IPv6 => 0x86DD,
+			Arp => 0x0806,
+			IEEE8021Q => 0x8100,
+			WakeOnLAN => 0x0842,
+			IetfTrillProtocol => 0x22F3,
+			DECnetPhaseIV => 0x6003,
+			ReverseAddressResolutionProtocol => 0x8035,
+			Ethertalk => 0x809B,
+			AARP => 0x80F3,
+			IPX => 0x8137,
+			EthernetFlowControl => 0x8808,
+			Unknown(uk) => uk
+		}
+	}
+}
+
 impl From<[u8; 2]> for EtherType {
 	fn from(data: [u8; 2]) -> Self {
 		Self::from(u16::from_be_bytes(data))

@@ -1,9 +1,10 @@
+use std::io::{BufWriter, Write};
 use std::net::Ipv4Addr;
 
 use etherparse::{Ipv4HeaderSlice, Ipv6HeaderSlice, TcpHeaderSlice};
 use etherparse::WriteError;
 
-use crate::meta::TUN_SIZE;
+use crate::meta::{ETHERNET_MTU, TUN_SIZE};
 use crate::result;
 use crate::result::Error;
 use crate::tcp::packet::TcpIpHeader;
@@ -108,62 +109,54 @@ impl<'a> RawReader<'a> {
 
     pub fn data_offset(&mut self) -> usize {
         if self.data_offset.is_none() {
-            self.tcp_header()
+            self.tcp_header();
         }
         self.data_offset.unwrap()
     }
 }
 
 
-pub struct RawWriter<'a> {
+pub struct RawWriter {
     offset: usize,
-    buf: &'a [u8],
-    packet: &'a TcpIpHeader,
+    buf: BufWriter<Vec<u8>>,
 }
 
-impl<'a> RawWriter<'a> {
-    pub fn from_tuntap_packet(buf: &'a [u8], packet: &'a TcpIpHeader) -> Self {
+impl RawWriter {
+    pub fn with_default_offset() -> Self {
+        Self::new(TUN_SIZE)
+    }
+    pub fn change_offset(&mut self, offset: usize) {
+        self.offset = offset;
+    }
+
+    pub fn buffer(&self) -> &[u8] {
+        self.buf.buffer()
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity <= ETHERNET_MTU, "capacity must less or equal ETHERNET_MTU(1500)");
         Self {
             offset: TUN_SIZE,
-            buf,
-            packet,
+            buf: BufWriter::new(Vec::with_capacity(capacity)),
         }
     }
-
-    pub fn new(offset: usize, buf: &'a [u8], packet: &'a TcpIpHeader) -> Self {
+    pub fn new(offset: usize) -> Self {
         Self {
             offset,
-            buf,
-            packet,
+            buf: BufWriter::new(Vec::with_capacity(ETHERNET_MTU)),
         }
-    }
-
-    fn minimum_size(&self) -> usize {
-        self.offset + self.packet.ip_header.header_len() + self.packet.tcp_header.header_len() - 1
-    }
-
-    fn assert_range(&self) -> bool {
-        self.buf.len() < self.minimum_size()
     }
 
     pub fn write_tuntap_header(&mut self, version: u16, flags: u16) {
         let ver_buf: [u8; 2] = version.to_le_bytes();
         let flag_buf: [u8; 2] = flags.to_le_bytes();
-        *self.buf[0] = flag_buf[0];
-        *self.buf[1] = flag_buf[1];
-        *self.buf[2] = ver_buf[0];
-        *self.buf[3] = ver_buf[1];
+        self.buf.write(&ver_buf);
+        self.buf.write(&flag_buf);
     }
 
-    pub fn write_header(&mut self) -> result::Result<()> {
-        if !self.assert_range() {
-            return Err(Error::WriteError(WriteError::SliceTooSmall(self.minimum_size())));
-        }
-        let mut buf = self.buf[self.offset..];
-        self.packet.ip_header.write(&mut buf)?;
-        self.packet.tcp_header.write(&mut [self.packet.ip_header.header_len()..])?;
+    pub fn write_header(&mut self, packet: &TcpIpHeader) -> result::Result<()> {
+        packet.ip_header.write(&mut self.buf)?;
+        packet.tcp_header.write(&mut self.buf)?;
         Ok(())
     }
-
-    pub fn write_payload(&mut self) -> result::Result<()> {}
 }

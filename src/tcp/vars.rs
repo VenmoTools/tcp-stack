@@ -72,13 +72,13 @@ impl ReceiveSequenceSpace {
     }
     /// check if the beginning of segment falls in the window
     pub fn beginning_fall_in_wnd(&self, seq_number: u32) -> bool {
-        self.nxt <= seq_number && seq_number < self.nxt + self.wnd
+        self.nxt <= seq_number && seq_number < self.nxt + self.wnd as u32
     }
 
     /// check if the end of the segment falls in the window
     pub fn end_of_fall_in_wnd(&self, seq_number: u32, seq_len: u32) -> bool {
         let seq = seq_number + seq_len - 1;
-        self.nxt <= seq && seq < self.nxt + self.wnd
+        self.nxt <= seq && seq < self.nxt + self.wnd as u32
     }
 }
 

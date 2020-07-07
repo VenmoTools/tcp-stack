@@ -10,6 +10,7 @@ use crate::meta::ETHERNET_MTU;
 use crate::net_types::EtherType;
 use crate::net_types::Protocol::TCP;
 use crate::reader_writer::RawWriter;
+// use crate::reader_writer::RawWriter;
 use crate::result;
 use crate::tcp::packet::TcpIpHeader;
 
@@ -53,8 +54,8 @@ pub struct TcpConnection {
     send_seq: SendSequenceSpace,
     /// Receive Sequence Variables
     recv_seq: ReceiveSequenceSpace,
-    pub(crate) incoming: ArrayQueue<u8>,
-    pub(crate) wait_ack: ArrayQueue<u8>,
+    // pub(crate) incoming: ArrayQueue<u8>,
+    // pub(crate) wait_ack: ArrayQueue<u8>,
 }
 
 
@@ -111,8 +112,8 @@ impl TcpConnection {
             keep_alive: None,
             send_seq: SendSequenceSpace::default(),
             recv_seq: ReceiveSequenceSpace::default(),
-            incoming: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
-            wait_ack: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+            // incoming: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+            // wait_ack: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
         }
     }
 
@@ -149,9 +150,9 @@ impl TcpConnection {
         packet.snd_syn();
 
         let data = [0_u8; ETHERNET_MTU];
-        let mut raw = RawWriter::from_tuntap_packet(&data, &packet);
-        raw.write_tuntap_header(EtherType::IPv4.into(), 4);
-        raw.write_header()?;
+        // let mut raw = RawWriter::from_tuntap_packet(&data, &packet);
+        // raw.write_tuntap_header(EtherType::IPv4.into(), 4);
+        // raw.write_header()?;
         iface.send(&data);
         conn.set_state(TcpState::SynSent);
         Ok(conn)
@@ -164,8 +165,8 @@ impl TcpConnection {
             keep_alive: None,
             send_seq: SendSequenceSpace::default(),
             recv_seq: ReceiveSequenceSpace::from_seq_number(seq_number, wnd),
-            incoming: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
-            wait_ack: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+            // incoming: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
+            // wait_ack: ArrayQueue::new(TCP_DEFAULT_HANDLE_BUF_SIZE),
         }
     }
 
@@ -211,9 +212,10 @@ impl TcpConnection {
                 DEFAULT_WINDOWS_SIZE,
             ),
         );
-        let mut response = [0_u8; ETHERNET_MTU];
-        handshake(&mut conn, &mut handshake_packet, &mut response);
-        iface.send(&response);
+        let mut writer = RawWriter::with_default_offset();
+
+        handshake(&mut conn, &mut handshake_packet, &mut writer);
+        iface.send(&writer.buffer());
         conn.set_state(TcpState::SynReceived);
         Ok(Some(conn))
     }
@@ -225,7 +227,7 @@ impl TcpConnection {
 /// Client <----------------------------------- Server
 ///          send ACK,ack=y+1,c_seq=x+1
 /// Client -----------------------------------> Server
-fn handshake(conn: &mut TcpConnection, handshake_packet: &mut TcpIpHeader, resp_buf: &[u8]) -> result::Result<()> {
+fn handshake(conn: &mut TcpConnection, handshake_packet: &mut TcpIpHeader, writer: &mut RawWriter) -> result::Result<()> {
     // we have to set SYN and ACK flags
     handshake_packet.snd_ayn_ack();
     handshake_packet.tcp_header.sequence_number = conn.send_seq.nxt;
@@ -235,7 +237,6 @@ fn handshake(conn: &mut TcpConnection, handshake_packet: &mut TcpIpHeader, resp_
     let checksum = handshake_packet.check_sum(&[])?;
     handshake_packet.tcp_header.checksum = checksum;
     // data offset if have data, So the offset in relative to packet or relative to tcp data?
-    let mut writer = RawWriter::from_tuntap_packet(resp_buf, handshake_packet);
-    writer.write_header()?;
+    writer.write_header(handshake_packet)?;
     Ok(())
 }
