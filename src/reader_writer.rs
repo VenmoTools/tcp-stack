@@ -109,7 +109,7 @@ impl<'a> RawReader<'a> {
 
     pub fn data_offset(&mut self) -> usize {
         if self.data_offset.is_none() {
-            self.tcp_header();
+            self.tcp_header()?;
         }
         self.data_offset.unwrap()
     }
@@ -147,11 +147,12 @@ impl RawWriter {
         }
     }
 
-    pub fn write_tuntap_header(&mut self, version: u16, flags: u16) {
+    pub fn write_tuntap_header(&mut self, version: u16, flags: u16) -> result::Result<()> {
         let ver_buf: [u8; 2] = version.to_le_bytes();
         let flag_buf: [u8; 2] = flags.to_le_bytes();
-        self.buf.write(&ver_buf);
-        self.buf.write(&flag_buf);
+        self.buf.write(&ver_buf)?;
+        self.buf.write(&flag_buf)?;
+        Ok(())
     }
 
     pub fn write_header(&mut self, packet: &TcpIpHeader) -> result::Result<()> {

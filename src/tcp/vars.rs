@@ -159,8 +159,11 @@ pub struct TcpOption {
     timestamp: Option<TimeStamp>,
 }
 
+#[derive(Debug)]
 pub struct MaximumSegmentSize(usize);
 
+#[derive(Debug)]
 pub struct SackPermitted(usize);
 
-pub struct TimeStamp(TimeStamp);
+#[derive(Debug)]
+pub struct TimeStamp(usize);

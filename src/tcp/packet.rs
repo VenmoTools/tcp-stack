@@ -53,8 +53,9 @@ impl TcpIpHeader {
     }
 
     /// already add tcp header len
-    pub fn set_payload_len(&mut self, len: usize) {
-        self.ip_header.set_payload_len(self.tcp_header.header_len() as usize + len);
+    pub fn set_payload_len(&mut self, len: usize) -> result::Result<()> {
+        self.ip_header.set_payload_len(self.tcp_header.header_len() as usize + len)?;
+        Ok(())
     }
 
     pub fn snd_syn(&mut self) {

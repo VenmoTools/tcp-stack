@@ -151,7 +151,7 @@ impl TcpConnection {
 
         let mut raw = RawWriter::new(0);
         raw.write_header(&packet)?;
-        iface.send(raw.buffer());
+        iface.send(raw.buffer())?;
         conn.set_state(TcpState::SynSent);
         Ok(conn)
     }
@@ -207,7 +207,7 @@ impl TcpConnection {
         let mut handshake_packet = TcpIpHeader::with_rcv_tcpip_header(tcp, ip);
         let mut writer = RawWriter::with_default_offset();
 
-        handshake(&mut conn, &mut handshake_packet, &mut writer);
+        handshake(&mut conn, &mut handshake_packet, &mut writer)?;
         debug!("[{:?}:{}] <- [{:?}:{}] SYN:{} SEQ:{} ACK_NUM:{},ACK:{}",
                ip.destination_addr(), tcp.destination_port(),
                ip.source_addr(), tcp.source_port(),
@@ -216,7 +216,7 @@ impl TcpConnection {
                handshake_packet.tcp_header.acknowledgment_number,
                handshake_packet.tcp_header.ack
         );
-        iface.send(&writer.buffer());
+        iface.send(&writer.buffer())?;
         conn.set_state(TcpState::SynReceived);
         Ok(Some(conn))
     }

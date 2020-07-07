@@ -11,4 +11,5 @@ pub mod meta;
 
 pub fn init_log() {
     pretty_env_logger::init();
+    debug!("start logging");
 }

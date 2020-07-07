@@ -11,8 +11,9 @@ use tcp_stack::result;
 use tcp_stack::tcp::connection::TcpConnection;
 
 fn main() -> result::Result<()> {
-    env::var("RUST_LOG=debug");
-    let mut status: HashMap<Quad, TcpConnection> = HashMap::new();
+    env::set_var("RUST_LOG", "debug");
+    tcp_stack::init_log();
+    // let mut status: HashMap<Quad, TcpConnection> = HashMap::new();
     // do we need IFF_NO_PI?
     let mut iface = Iface::new("tcp0", tun_tap::Mode::Tun)?;
     // MTU 1500
@@ -32,8 +33,9 @@ fn main() -> result::Result<()> {
                 continue;
             }
         };
-        let quad = Quad::from_tcpip_header(&ip_header, &tcp_header);
-        status.entry(quad);
+        let buf = &mtu_buf[TUN_SIZE + ip_header.slice().len() + tcp_header.slice().len()..n];
+        TcpConnection::accept(&mut iface, &ip_header, &tcp_header, buf)?;
+        // let quad = Quad::from_tcpip_header(&ip_header, &tcp_header);
     }
 }
 
